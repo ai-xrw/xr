@@ -23,8 +23,8 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
-MAX_IMAGES_PER_ALBUM = 30      # 每套图集最多下载30张
-TG_INTERVAL = 15               # 每套图集之间的冷却时间(秒)
+MAX_IMAGES_PER_ALBUM = 30
+TG_INTERVAL = 15
 
 def load_seen():
     if not os.path.exists(SEEN_FILE) or os.path.getsize(SEEN_FILE) == 0:
@@ -39,12 +39,16 @@ def save_seen(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(list(seen), f, ensure_ascii=False)
 
-async def get_rendered_html(url, scroll_times=10, extra_wait=8):
-    """用 Playwright 打开页面，滚动到底部多次，等待图片加载，返回完整 HTML"""
+async def get_rendered_html(url, scroll_times=5, extra_wait=3):
+    """打开页面，滚动并等待指定秒数，返回 HTML。
+       改用 domcontentloaded 避免 networkidle 超时，并增加总超时时间到 60 秒。"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
-        await page.goto(url, wait_until="networkidle", timeout=30000)
+        # 关键修改：使用 domcontentloaded，超时 60 秒
+        await page.goto(url, wait_until="domcontentloaded", timeout=60000)
+        # 额外等待几秒，让异步内容有时间渲染
+        await asyncio.sleep(5)
         for _ in range(scroll_times):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(1.5)
@@ -54,38 +58,18 @@ async def get_rendered_html(url, scroll_times=10, extra_wait=8):
         await browser.close()
         return html
 
-async def get_albums_from_page(page_url):
-    """从指定页面提取所有图集链接（匹配 /jigou/xiuren/数字.html）"""
-    print(f"🔍 正在加载并提取图集: {page_url}")
-    html = await get_rendered_html(page_url, scroll_times=12, extra_wait=10)
-    soup = BeautifulSoup(html, "html.parser")
-    albums = []
-    # 精确匹配 /jigou/xiuren/数字.html
-    pattern = re.compile(r'/jigou/xiuren/(\d+)\.html')
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        match = pattern.search(href)
-        if match:
-            full_url = href if href.startswith("http") else BASE_URL + href
-            title = a.get("title") or a.text.strip()
-            if not title:
-                parent = a.find_parent("div")
-                if parent:
-                    title = parent.get("title") or parent.text.strip()
-            albums.append({"title": title or "无标题", "url": full_url})
-    # 去重
-    seen = set()
-    unique_albums = []
-    for a in albums:
-        theme_id = a["url"].split("/")[-1].replace(".html", "")
-        if theme_id not in seen:
-            seen.add(theme_id)
-            unique_albums.append(a)
-    print(f"✅ 共发现 {len(unique_albums)} 个图集")
-    return unique_albums
+async def get_album_images_with_retry(album_url, retries=2):
+    """重试获取图集图片，如果超时则重试，每次重试增加等待时间"""
+    for attempt in range(retries):
+        try:
+            return await _get_album_images(album_url)
+        except Exception as e:
+            print(f"      ⚠️ 第 {attempt+1} 次抓取图集失败: {e}")
+            if attempt < retries - 1:
+                await asyncio.sleep(10)
+    return []
 
-async def get_album_images(album_url):
-    """从图集详情页提取前 MAX_IMAGES_PER_ALBUM 张图片"""
+async def _get_album_images(album_url):
     print(f"  📸 抓取图集: {album_url}")
     html = await get_rendered_html(album_url, scroll_times=5, extra_wait=5)
     soup = BeautifulSoup(html, "html.parser")
@@ -101,6 +85,33 @@ async def get_album_images(album_url):
                     break
     print(f"    提取到 {len(images)} 张图片")
     return images
+
+async def get_albums_from_page(page_url):
+    print(f"🔍 正在加载并提取图集: {page_url}")
+    html = await get_rendered_html(page_url, scroll_times=12, extra_wait=10)
+    soup = BeautifulSoup(html, "html.parser")
+    albums = []
+    pattern = re.compile(r'/jigou/xiuren/(\d+)\.html')
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        match = pattern.search(href)
+        if match:
+            full_url = href if href.startswith("http") else BASE_URL + href
+            title = a.get("title") or a.text.strip()
+            if not title:
+                parent = a.find_parent("div")
+                if parent:
+                    title = parent.get("title") or parent.text.strip()
+            albums.append({"title": title or "无标题", "url": full_url})
+    seen = set()
+    unique_albums = []
+    for a in albums:
+        theme_id = a["url"].split("/")[-1].replace(".html", "")
+        if theme_id not in seen:
+            seen.add(theme_id)
+            unique_albums.append(a)
+    print(f"✅ 共发现 {len(unique_albums)} 个图集")
+    return unique_albums
 
 def download_image(url, referer=BASE_URL):
     try:
@@ -183,7 +194,7 @@ def select_cover(downloaded):
 
 async def process_album(album_title, album_url, theme_id):
     print(f"\n  🖼️ 处理图集: {album_title} (ID:{theme_id})")
-    image_urls = await get_album_images(album_url)
+    image_urls = await get_album_images_with_retry(album_url, retries=2)
     if not image_urls:
         print("    ❌ 无图片，跳过")
         return False
@@ -234,8 +245,6 @@ async def main():
 
     seen = load_seen()
     albums = await get_albums_from_page(TARGET_PAGE)
-
-    # 倒序：从最后一个图集开始向前处理
     albums.reverse()
     print(f"🔄 已反转顺序，将从底部图集开始处理")
 
