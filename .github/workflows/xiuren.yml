@@ -2,7 +2,7 @@ name: 秀人机构搬运
 
 on:
   schedule:
-    - cron: '0 */6 * * *'    # 每6小时
+    - cron: '0 */24 * * *'    # 每6小时
   workflow_dispatch:
 
 concurrency:
