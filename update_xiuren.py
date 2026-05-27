@@ -55,14 +55,12 @@ async def get_rendered_html(url, scroll_times=5, extra_wait=3):
         return html
 
 async def get_albums_from_page(page_url):
-    """提取图集列表，包含封面图"""
     print(f"🔍 正在加载并提取图集: {page_url}")
     html = await get_rendered_html(page_url, scroll_times=12, extra_wait=10)
     soup = BeautifulSoup(html, "html.parser")
     albums = []
     pattern = re.compile(r'/jigou/xiuren/(\d+)\.html')
 
-    # 遍历所有图集链接（a标签）
     for a in soup.find_all("a", href=True):
         href = a["href"]
         match = pattern.search(href)
@@ -76,13 +74,11 @@ async def get_albums_from_page(page_url):
             if parent:
                 title = parent.get("title") or parent.text.strip()
 
-        # 提取封面图：优先从a标签内部的img获取，否则从父元素中找第一个img
         cover_url = ""
         img_tag = a.find("img")
         if img_tag and img_tag.get("src"):
             cover_url = img_tag["src"]
         else:
-            # 尝试从父级元素中找
             parent = a.find_parent()
             if parent:
                 img_tag = parent.find("img")
@@ -99,7 +95,6 @@ async def get_albums_from_page(page_url):
             "theme_id": match.group(1)
         })
 
-    # 去重
     seen = set()
     unique = []
     for a in albums:
@@ -111,7 +106,6 @@ async def get_albums_from_page(page_url):
     return unique
 
 async def _get_album_images(album_url):
-    """获取详情页大图，过滤logo"""
     print(f"  📸 抓取图集: {album_url}")
     html = await get_rendered_html(album_url, scroll_times=5, extra_wait=5)
     soup = BeautifulSoup(html, "html.parser")
@@ -120,13 +114,10 @@ async def _get_album_images(album_url):
         src = img.get("src") or img.get("data-src") or img.get("data-lazy-src")
         if not src or src.startswith("data:"):
             continue
-        # 补全URL
         if not src.startswith("http"):
             src = "https:" + src if src.startswith("//") else BASE_URL + "/" + src.lstrip("/")
-        # 过滤logo/图标
         if any(pat in src.lower() for pat in ["/logo", "/favicon", "/icon", "/avatar", "/static/logo", "/assets/logo", "logo.png", "logo.jpg"]):
             continue
-        # 去重
         if src not in images:
             images.append(src)
             if len(images) >= MAX_IMAGES_PER_ALBUM:
@@ -209,24 +200,19 @@ def send_media_groups(image_data_list, target_chat_id, caption=""):
     return first_msg_id
 
 def generate_tags(title):
-    """从标题提取模特名标签，例如 '[秀人XiuRen] 2025.12.17 No.11120 Twins-夭夭' -> ['#Twins-夭夭']"""
     tags = []
-    # 尝试匹配 No.数字 后面的部分（可能是模特名）
     match = re.search(r'No\.\d+\s+(.*)', title)
     if match:
         names = match.group(1).strip()
-        # 可能多个模特名用逗号、空格等分隔，这里简单以空格分割，并过滤短词
         for name in names.split():
             name = name.strip().rstrip(',;')
-            if len(name) > 1:  # 至少两个字符
+            if len(name) > 1:
                 tags.append(f"#{name}")
-    # 如果没有 No.，可以尝试匹配 ][空格]后面的内容？
     if not tags:
-        # 简单备用：去掉方括号内容，取剩余部分作为模特名
         clean = re.sub(r'\[.*?\]', '', title).strip()
         if clean:
             tags.append(f"#{clean}")
-    return tags[:5]  # 最多5个标签
+    return tags[:5]
 
 async def process_album(album):
     title = album["title"]
@@ -235,32 +221,25 @@ async def process_album(album):
     album_url = album["url"]
 
     print(f"\n  🖼️ 处理图集: {title} (ID:{theme_id})")
-    # 下载封面图
+
     cover_data = None
     if cover_url:
         res = download_image(cover_url)
         if res:
             cover_data = res
+
     if not cover_data:
-        # 如果没有封面图，则从大图中选第一张作为封面
         print("    ⚠️ 未找到封面图，将使用第一张大图作为封面")
         image_urls = await get_album_images_with_retry(album_url, retries=2)
         if not image_urls:
             print("    ❌ 无图片，跳过")
             return False
-        # 取第一张作为封面，剩余作为群组图
         cover_data = download_image(image_urls[0])
         rest_urls = image_urls[1:]
     else:
-        # 下载大图（群组用）
         image_urls = await get_album_images_with_retry(album_url, retries=2)
-        if not image_urls:
-            # 没有大图，只有封面图
-            image_urls = []
-        # 大图不包含封面图，直接发送
-        rest_urls = image_urls
+        rest_urls = image_urls if image_urls else []
 
-    # 下载剩余大图
     downloaded_rest = []
     for url in rest_urls:
         res = download_image(url)
@@ -268,18 +247,20 @@ async def process_album(album):
             downloaded_rest.append(res)
         time.sleep(0.1)
 
-    # 标签
     tags = generate_tags(title)
     tag_str = " ".join(tags) if tags else ""
 
-    # 发送封面到频道
-    cover_data_tuple = cover_data  # (BytesIO, ctype)
+    cover_data_tuple = cover_data
     cover_data_tuple[0].seek(0)
     ext = cover_data_tuple[1].split("/")[-1].replace("jpeg", "jpg")
-    caption = f"<b>{title}</b>"
+
+    # 构建 caption：标题 + 标签 + VIP群链接 + 图集链接
+    caption = f"{title}"
     if tag_str:
         caption += f"\n{tag_str}"
-    caption += f"\n\n👉 点击查看完整图集"
+    caption += f"\n\n<a href=\"https://t.me/xiuren88bot?start=lWAXnjXFzdxP\">点我进vip群查看完整版</a>"
+    caption += f"\n<a href=\"{album_url}\">👉 点击查看完整图集</a>"
+
     try:
         r = requests.post(
             f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
@@ -295,7 +276,6 @@ async def process_album(album):
         print(f"    ❌ 频道异常: {e}")
         return False
 
-    # 发送剩余大图到群组
     if downloaded_rest and GROUP_ID:
         print(f"    📤 发送剩余 {len(downloaded_rest)} 张到群组")
         send_media_groups(downloaded_rest, GROUP_ID, caption="📎 本组合集")
