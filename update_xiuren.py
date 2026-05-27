@@ -250,16 +250,27 @@ async def process_album(album):
     tags = generate_tags(title)
     tag_str = " ".join(tags) if tags else ""
 
+    # 发送剩余图片到群组，并获取第一个媒体组的消息ID
+    first_group_msg_id = None
+    if downloaded_rest and GROUP_ID:
+        print(f"    📤 发送剩余 {len(downloaded_rest)} 张到群组")
+        first_group_msg_id = send_media_groups(downloaded_rest, GROUP_ID, caption="📎 本组合集")
+
+    # 生成群组消息链接
+    group_link = album_url  # 默认回退到原网页
+    if first_group_msg_id and GROUP_USERNAME:
+        group_link = f"https://t.me/{GROUP_USERNAME}/{first_group_msg_id}"
+
+    # 构建频道封面的标题与链接（调整顺序：VIP链接放最下面，前面加星星）
     cover_data_tuple = cover_data
     cover_data_tuple[0].seek(0)
     ext = cover_data_tuple[1].split("/")[-1].replace("jpeg", "jpg")
 
-    # 构建 caption：标题 + 标签 + VIP群链接 + 图集链接
     caption = f"{title}"
     if tag_str:
         caption += f"\n{tag_str}"
-    caption += f"\n\n<a href=\"https://t.me/xiuren88bot?start=lWAXnjXFzdxP\">点我进vip群查看完整版</a>"
-    caption += f"\n<a href=\"{album_url}\">👉 点击查看完整图集</a>"
+    caption += f"\n\n<a href=\"{group_link}\">👉 点击查看完整图集</a>"
+    caption += f"\n\n🌟 <a href=\"https://t.me/xiuren88bot?start=lWAXnjXFzdxP\">点我进vip群查看完整版</a>"
 
     try:
         r = requests.post(
@@ -276,10 +287,6 @@ async def process_album(album):
         print(f"    ❌ 频道异常: {e}")
         return False
 
-    if downloaded_rest and GROUP_ID:
-        print(f"    📤 发送剩余 {len(downloaded_rest)} 张到群组")
-        send_media_groups(downloaded_rest, GROUP_ID, caption="📎 本组合集")
-
     return True
 
 async def main():
@@ -287,6 +294,20 @@ async def main():
     if not TOKEN or not CHAT_ID:
         print("❌ 缺少 TG_TOKEN 或 TG_CHAT_ID")
         sys.exit(1)
+
+    # 获取群组用户名
+    if GROUP_ID:
+        try:
+            r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getChat?chat_id={GROUP_ID}", timeout=10)
+            if r.status_code == 200 and r.json().get("ok"):
+                global GROUP_USERNAME
+                GROUP_USERNAME = r.json()["result"].get("username")
+                if GROUP_USERNAME:
+                    print(f"✅ 群组用户名: @{GROUP_USERNAME}")
+                else:
+                    print("⚠️ 该群组没有公开用户名，将无法生成群组链接")
+        except Exception as e:
+            print(f"⚠️ 获取群组信息异常: {e}")
 
     seen = load_seen()
     albums = await get_albums_from_page(TARGET_PAGE)
