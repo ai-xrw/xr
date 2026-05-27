@@ -17,14 +17,14 @@ CHAT_ID = os.getenv("TG_CHAT_ID")
 GROUP_ID = os.getenv("TG_GROUP_ID")
 SEEN_FILE = "seen_xiuren.json"
 BASE_URL = "https://www.xiurenai.com"
+TARGET_PAGE = f"{BASE_URL}/jigou/xiuren"
+
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
-# 每个图集最多下载的图片数量
-MAX_IMAGES_PER_ALBUM = 30
-# 每篇文章之间的冷却时间（秒）
-TG_INTERVAL = 15
+MAX_IMAGES_PER_ALBUM = 30      # 每套图集最多下载30张
+TG_INTERVAL = 15               # 每套图集之间的冷却时间(秒)
 
 def load_seen():
     if not os.path.exists(SEEN_FILE) or os.path.getsize(SEEN_FILE) == 0:
@@ -39,53 +39,35 @@ def save_seen(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(list(seen), f, ensure_ascii=False)
 
-async def get_rendered_html(url, scroll_times=3):
-    """用 Playwright 打开页面并返回完整 HTML，自动滚动加载更多内容"""
+async def get_rendered_html(url, scroll_times=8, extra_wait=5):
+    """用 Playwright 打开页面，滚动到底部多次，等待图片加载，返回完整 HTML"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle", timeout=30000)
+        # 多次滚动到底部，触发懒加载和无限滚动
         for _ in range(scroll_times):
-            await page.evaluate("window.scrollBy(0, window.innerHeight)")
+            await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(1.5)
+        if extra_wait:
+            await asyncio.sleep(extra_wait)
         html = await page.content()
         await browser.close()
         return html
 
-async def get_organization_pages():
-    """抓取前两页机构列表，返回所有机构链接"""
-    org_urls = []
-    for page in [1, 2]:
-        url = f"{BASE_URL}/jigou" if page == 1 else f"{BASE_URL}/jigou/page/{page}"
-        print(f"🔍 正在渲染机构列表第 {page} 页: {url}")
-        html = await get_rendered_html(url, scroll_times=2)
-        soup = BeautifulSoup(html, "html.parser")
-        # 提取所有指向 /jigou/xxx 的链接（排除分页自身）
-        for a in soup.select("a[href*='/jigou/']"):
-            href = a.get("href")
-            if href and href != "/jigou" and "/page/" not in href:
-                full_url = href if href.startswith("http") else BASE_URL + href
-                if full_url not in org_urls:
-                    org_urls.append(full_url)
-        print(f"  第 {page} 页提取到 {len(org_urls)} 个机构")
-        await asyncio.sleep(2)
-    return org_urls
-
-async def get_albums_from_org(org_url):
-    """从机构页面提取所有图集链接，滚动加载多次确保内容出现"""
-    print(f"  📄 抓取机构页面: {org_url}")
-    html = await get_rendered_html(org_url, scroll_times=5)
+async def get_albums_from_page(page_url):
+    """从指定页面提取所有图集链接，返回一个列表"""
+    print(f"🔍 正在加载并提取图集: {page_url}")
+    html = await get_rendered_html(page_url, scroll_times=10, extra_wait=8)
     soup = BeautifulSoup(html, "html.parser")
     albums = []
-    # 常见图集链接格式：/theme/123、/album/123、/t/123 等，这里先匹配几种
+    # 匹配常见图集链接格式：/theme/数字、/album/数字、/t/数字
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        # 提取可能包含图集 ID 的链接
         if re.search(r'/(theme|album|t)/\d+', href):
             full_url = href if href.startswith("http") else BASE_URL + href
             title = a.get("title") or a.text.strip()
             if not title:
-                # 尝试从父元素找标题
                 parent = a.find_parent("div")
                 if parent:
                     title = parent.get("title") or parent.text.strip()
@@ -98,13 +80,13 @@ async def get_albums_from_org(org_url):
         if theme_id not in seen:
             seen.add(theme_id)
             unique_albums.append(a)
-    print(f"    发现 {len(unique_albums)} 个图集")
+    print(f"✅ 共发现 {len(unique_albums)} 个图集")
     return unique_albums
 
 async def get_album_images(album_url):
-    """进入图集详情页，提取图片 URL（前 MAX_IMAGES_PER_ALBUM 张）"""
-    print(f"    📸 抓取图集: {album_url}")
-    html = await get_rendered_html(album_url, scroll_times=5)
+    """从图集详情页提取前 MAX_IMAGES_PER_ALBUM 张图片"""
+    print(f"  📸 抓取图集: {album_url}")
+    html = await get_rendered_html(album_url, scroll_times=5, extra_wait=5)
     soup = BeautifulSoup(html, "html.parser")
     images = []
     for img in soup.find_all("img"):
@@ -116,7 +98,7 @@ async def get_album_images(album_url):
                 images.append(src)
                 if len(images) >= MAX_IMAGES_PER_ALBUM:
                     break
-    print(f"      提取到 {len(images)} 张图片")
+    print(f"    提取到 {len(images)} 张图片")
     return images
 
 def download_image(url, referer=BASE_URL):
@@ -129,7 +111,7 @@ def download_image(url, referer=BASE_URL):
             return None
         return BytesIO(r.content), ct
     except Exception as e:
-        print(f"      ❌ 下载失败: {e}")
+        print(f"    ❌ 下载失败: {e}")
         return None
 
 def send_media_groups(image_data_list, target_chat_id, caption=""):
@@ -184,7 +166,6 @@ def send_media_groups(image_data_list, target_chat_id, caption=""):
     return first_msg_id
 
 def select_cover(downloaded):
-    """从已下载图片中选一张最大的作为封面"""
     if not downloaded:
         return None, []
     items_with_size = []
@@ -200,7 +181,6 @@ def select_cover(downloaded):
     return cover, rest
 
 async def process_album(album_title, album_url, theme_id):
-    """处理单个图集：下载 → 发送 TG"""
     print(f"\n  🖼️ 处理图集: {album_title} (ID:{theme_id})")
     image_urls = await get_album_images(album_url)
     if not image_urls:
@@ -218,10 +198,8 @@ async def process_album(album_title, album_url, theme_id):
         print("    ❌ 全部下载失败")
         return False
 
-    # 智能选封面（选文件最大的一张）
     cover, rest = select_cover(downloaded)
 
-    # 发送封面到频道
     cover_data, cover_ctype = cover
     cover_data.seek(0)
     ext = cover_ctype.split("/")[-1].replace("jpeg", "jpg")
@@ -241,7 +219,6 @@ async def process_album(album_title, album_url, theme_id):
         print(f"    ❌ 频道异常: {e}")
         return False
 
-    # 发送剩余图片到群组（如果有群组 ID）
     if rest and GROUP_ID:
         print(f"    📤 发送剩余 {len(rest)} 张到群组")
         send_media_groups(rest, GROUP_ID, caption="📎 本组合集")
@@ -249,31 +226,31 @@ async def process_album(album_title, album_url, theme_id):
     return True
 
 async def main():
-    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 秀人完整抓取启动")
+    print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] 秀人单页倒序抓取启动")
     if not TOKEN or not CHAT_ID:
         print("❌ 缺少 TG_TOKEN 或 TG_CHAT_ID")
         sys.exit(1)
 
     seen = load_seen()
-    org_urls = await get_organization_pages()
-    print(f"\n✅ 共发现 {len(org_urls)} 个机构（前两页）")
+    albums = await get_albums_from_page(TARGET_PAGE)
+
+    # 倒序：从最后一个图集开始向前处理
+    albums.reverse()
+    print(f"🔄 已反转顺序，将从底部图集开始处理")
 
     total_processed = 0
-    for org_url in org_urls:
-        albums = await get_albums_from_org(org_url)
-        for album in albums:
-            theme_id = album["url"].split("/")[-1]
-            if theme_id in seen:
-                print(f"    ⏭️ 已处理过: {album['title']}")
-                continue
-            success = await process_album(album["title"], album["url"], theme_id)
-            if success:
-                seen.add(theme_id)
-                save_seen(seen)
-                total_processed += 1
-                print(f"    💾 进度已保存 (总 {total_processed})")
-            time.sleep(TG_INTERVAL)
-        time.sleep(3)
+    for album in albums:
+        theme_id = album["url"].split("/")[-1]
+        if theme_id in seen:
+            print(f"  ⏭️ 已处理过: {album['title']}")
+            continue
+        success = await process_album(album["title"], album["url"], theme_id)
+        if success:
+            seen.add(theme_id)
+            save_seen(seen)
+            total_processed += 1
+            print(f"  💾 进度已保存 (总 {total_processed})")
+        time.sleep(TG_INTERVAL)
 
     print(f"\n🎉 完成！共处理 {total_processed} 套新图集")
 
