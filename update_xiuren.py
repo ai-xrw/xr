@@ -23,7 +23,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 }
 
-MAX_IMAGES_PER_ALBUM = 30
+DEFAULT_MAX_IMAGES = 30           # 后续图集限制30张
 TG_INTERVAL = 15
 
 def load_seen():
@@ -105,8 +105,8 @@ async def get_albums_from_page(page_url):
     print(f"✅ 共发现 {len(unique)} 个图集")
     return unique
 
-async def _get_album_images(album_url):
-    print(f"  📸 抓取图集: {album_url}")
+async def _get_album_images(album_url, max_images=DEFAULT_MAX_IMAGES):
+    print(f"  📸 抓取图集: {album_url} (最多{max_images}张)")
     html = await get_rendered_html(album_url, scroll_times=5, extra_wait=5)
     soup = BeautifulSoup(html, "html.parser")
     images = []
@@ -120,15 +120,15 @@ async def _get_album_images(album_url):
             continue
         if src not in images:
             images.append(src)
-            if len(images) >= MAX_IMAGES_PER_ALBUM:
+            if len(images) >= max_images:
                 break
-    print(f"    提取到 {len(images)} 张大图（已过滤logo）")
+    print(f"    提取到 {len(images)} 张图片")
     return images
 
-async def get_album_images_with_retry(album_url, retries=2):
+async def get_album_images_with_retry(album_url, max_images=DEFAULT_MAX_IMAGES, retries=2):
     for attempt in range(retries):
         try:
-            return await _get_album_images(album_url)
+            return await _get_album_images(album_url, max_images)
         except Exception as e:
             print(f"      ⚠️ 第{attempt+1}次失败: {e}")
             if attempt < retries - 1:
@@ -199,56 +199,50 @@ def send_media_groups(image_data_list, target_chat_id, caption=""):
         time.sleep(3)
     return first_msg_id
 
-def generate_tags(title):
-    tags = []
-    match = re.search(r'No\.\d+\s+(.*)', title)
-    if match:
-        names = match.group(1).strip()
-        for name in names.split():
-            name = name.strip().rstrip(',;')
-            if len(name) > 1:
-                tags.append(f"#{name}")
-    if not tags:
-        clean = re.sub(r'\[.*?\]', '', title).strip()
-        if clean:
-            tags.append(f"#{clean}")
-    return tags[:5]
+def make_title_with_tag(original_title):
+    """将标题中的模特名前面加上#，如 'No.11069 心上可Flora' -> 'No.11069 #心上可Flora'"""
+    return re.sub(r'(No\.\d+)\s+(.*)', r'\1 #\2', original_title)
 
-async def process_album(album):
+async def process_album(album, first=False):
     title = album["title"]
     theme_id = album["theme_id"]
     cover_url = album["cover_url"]
     album_url = album["url"]
 
-    print(f"\n  🖼️ 处理图集: {title} (ID:{theme_id})")
+    # 生成带#的标题行
+    title_line = make_title_with_tag(title)
+    print(f"\n  🖼️ 处理图集: {title_line} (ID:{theme_id})")
 
+    # 确定大图数量
+    max_images = 9999 if first else DEFAULT_MAX_IMAGES
+
+    # 下载封面图
     cover_data = None
     if cover_url:
         res = download_image(cover_url)
         if res:
             cover_data = res
 
+    # 获取大图列表（用于群组）
+    image_urls = await get_album_images_with_retry(album_url, max_images=max_images, retries=2)
+
+    # 如果没有封面图，则用第一张大图作为封面
     if not cover_data:
-        print("    ⚠️ 未找到封面图，将使用第一张大图作为封面")
-        image_urls = await get_album_images_with_retry(album_url, retries=2)
         if not image_urls:
             print("    ❌ 无图片，跳过")
             return False
         cover_data = download_image(image_urls[0])
         rest_urls = image_urls[1:]
     else:
-        image_urls = await get_album_images_with_retry(album_url, retries=2)
         rest_urls = image_urls if image_urls else []
 
+    # 下载剩余大图
     downloaded_rest = []
     for url in rest_urls:
         res = download_image(url)
         if res:
             downloaded_rest.append(res)
         time.sleep(0.1)
-
-    tags = generate_tags(title)
-    tag_str = " ".join(tags) if tags else ""
 
     # 发送剩余图片到群组，并获取第一个媒体组的消息ID
     first_group_msg_id = None
@@ -261,16 +255,17 @@ async def process_album(album):
     if first_group_msg_id and GROUP_USERNAME:
         group_link = f"https://t.me/{GROUP_USERNAME}/{first_group_msg_id}"
 
-    # 构建频道封面的标题与链接（调整顺序：VIP链接放最下面，前面加星星）
+    # 构建频道封面标题
     cover_data_tuple = cover_data
     cover_data_tuple[0].seek(0)
     ext = cover_data_tuple[1].split("/")[-1].replace("jpeg", "jpg")
 
-    caption = f"{title}"
-    if tag_str:
-        caption += f"\n{tag_str}"
-    caption += f"\n\n<a href=\"{group_link}\">👉 点击查看完整图集</a>"
-    caption += f"\n\n🌟 <a href=\"https://t.me/xiuren88bot?start=lWAXnjXFzdxP\">点我进vip群查看完整版</a>"
+    caption = title_line
+    caption += f"\n\n<a href=\"{group_link}\">👉 点击查看图集</a>"
+
+    # 第一个图集不加VIP链接，后续图集加上
+    if not first:
+        caption += f"\n\n🌟 <a href=\"https://t.me/xiuren88bot?start=lWAXnjXFzdxP\">点我进vip群查看完整版</a>"
 
     try:
         r = requests.post(
@@ -296,11 +291,11 @@ async def main():
         sys.exit(1)
 
     # 获取群组用户名
+    global GROUP_USERNAME
     if GROUP_ID:
         try:
             r = requests.get(f"https://api.telegram.org/bot{TOKEN}/getChat?chat_id={GROUP_ID}", timeout=10)
             if r.status_code == 200 and r.json().get("ok"):
-                global GROUP_USERNAME
                 GROUP_USERNAME = r.json()["result"].get("username")
                 if GROUP_USERNAME:
                     print(f"✅ 群组用户名: @{GROUP_USERNAME}")
@@ -315,13 +310,16 @@ async def main():
     print(f"🔄 已反转顺序，从底部图集开始处理")
 
     total_processed = 0
-    for album in albums:
-        if album["theme_id"] in seen:
+    for idx, album in enumerate(albums):
+        theme_id = album["theme_id"]
+        if theme_id in seen:
             print(f"  ⏭️ 已处理: {album['title']}")
             continue
-        success = await process_album(album)
+        # 第一套图集特殊处理：全量图片，不加VIP链接
+        is_first = (idx == 0)
+        success = await process_album(album, first=is_first)
         if success:
-            seen.add(album["theme_id"])
+            seen.add(theme_id)
             save_seen(seen)
             total_processed += 1
             print(f"  💾 进度已保存 (总 {total_processed})")
