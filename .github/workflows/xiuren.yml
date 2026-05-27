@@ -2,7 +2,7 @@ name: 秀人机构搬运
 
 on:
   schedule:
-    - cron: '0 */6 * * *'    # 每6小时
+    - cron: '0 */6 * * *'    # 每6小时运行一次
   workflow_dispatch:
 
 concurrency:
@@ -25,9 +25,11 @@ jobs:
           python-version: '3.12'
 
       - name: 安装依赖
-        run: pip install requests beautifulsoup4
+        run: |
+          pip install requests beautifulsoup4 playwright
+          playwright install chromium --with-deps
 
-      - name: 恢复 seen 缓存
+      - name: 恢复进度缓存
         id: cache-seen
         uses: actions/cache@v4
         with:
@@ -36,7 +38,7 @@ jobs:
           restore-keys: |
             xiuren-seen-${{ runner.os }}-
 
-      - name: 初始化 seen 文件（若无缓存）
+      - name: 初始化进度文件（若无缓存）
         if: steps.cache-seen.outputs.cache-hit != 'true'
         run: echo '[]' > seen_xiuren.json
 
@@ -47,7 +49,7 @@ jobs:
           TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
         run: python update_xiuren.py
 
-      - name: 保存 seen 缓存
+      - name: 保存进度缓存
         if: success()
         uses: actions/cache@v4
         with:
