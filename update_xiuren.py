@@ -39,13 +39,12 @@ def save_seen(seen):
     with open(SEEN_FILE, "w", encoding="utf-8") as f:
         json.dump(list(seen), f, ensure_ascii=False)
 
-async def get_rendered_html(url, scroll_times=8, extra_wait=5):
+async def get_rendered_html(url, scroll_times=10, extra_wait=8):
     """用 Playwright 打开页面，滚动到底部多次，等待图片加载，返回完整 HTML"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
         await page.goto(url, wait_until="networkidle", timeout=30000)
-        # 多次滚动到底部，触发懒加载和无限滚动
         for _ in range(scroll_times):
             await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             await asyncio.sleep(1.5)
@@ -56,15 +55,17 @@ async def get_rendered_html(url, scroll_times=8, extra_wait=5):
         return html
 
 async def get_albums_from_page(page_url):
-    """从指定页面提取所有图集链接，返回一个列表"""
+    """从指定页面提取所有图集链接（匹配 /jigou/xiuren/数字.html）"""
     print(f"🔍 正在加载并提取图集: {page_url}")
-    html = await get_rendered_html(page_url, scroll_times=10, extra_wait=8)
+    html = await get_rendered_html(page_url, scroll_times=12, extra_wait=10)
     soup = BeautifulSoup(html, "html.parser")
     albums = []
-    # 匹配常见图集链接格式：/theme/数字、/album/数字、/t/数字
+    # 精确匹配 /jigou/xiuren/数字.html
+    pattern = re.compile(r'/jigou/xiuren/(\d+)\.html')
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        if re.search(r'/(theme|album|t)/\d+', href):
+        match = pattern.search(href)
+        if match:
             full_url = href if href.startswith("http") else BASE_URL + href
             title = a.get("title") or a.text.strip()
             if not title:
@@ -76,7 +77,7 @@ async def get_albums_from_page(page_url):
     seen = set()
     unique_albums = []
     for a in albums:
-        theme_id = a["url"].split("/")[-1]
+        theme_id = a["url"].split("/")[-1].replace(".html", "")
         if theme_id not in seen:
             seen.add(theme_id)
             unique_albums.append(a)
@@ -240,7 +241,7 @@ async def main():
 
     total_processed = 0
     for album in albums:
-        theme_id = album["url"].split("/")[-1]
+        theme_id = album["url"].split("/")[-1].replace(".html", "")
         if theme_id in seen:
             print(f"  ⏭️ 已处理过: {album['title']}")
             continue
