@@ -68,62 +68,88 @@ async def get_rendered_html(url, scroll_times=8, extra_wait=5):
         await browser.close()
         return html
 
-async def get_albums_from_list(page_url):
-    """根据真实链接格式提取图集：/photo/id-xxx.html"""
-    print(f"🔍 正在抓取列表页: {page_url}")
+async def diagnose_and_get_albums(page_url):
+    """诊断版：打印所有链接示例，然后尝试用多种规则提取图集"""
+    print(f"🔍 正在诊断页面: {page_url}")
     html = await get_rendered_html(page_url, scroll_times=12, extra_wait=10)
     soup = BeautifulSoup(html, "html.parser")
-    albums = []
 
-    # 精确匹配 /photo/id-xxx.html 格式
-    pattern = re.compile(r'/photo/id-([a-f0-9]+)\.html')
+    # 打印前 30 条链接
+    all_links = [a.get("href") for a in soup.find_all("a", href=True) if a.get("href")]
+    print("📋 页面所有链接示例 (前30条):")
+    for i, link in enumerate(all_links[:30], 1):
+        print(f"  {i}: {link}")
+
+    albums = []
+    seen_ids = set()
+
+    # 尝试多种常见图集路径模式
+    patterns = [
+        r'/photo/id-([a-f0-9]+)\.html',            # /photo/id-xxx.html
+        r'/photo/([a-zA-Z0-9-]+)\.html',           # /photo/xxx.html
+        r'/album/([a-zA-Z0-9-]+)\.html',           # /album/xxx.html
+        r'/g/([a-zA-Z0-9-]+)',                      # /g/xxx
+        r'/p/([a-zA-Z0-9-]+)',                      # /p/xxx
+        r'/view/([a-zA-Z0-9-]+)\.html',            # /view/xxx.html
+        r'/photos/([a-zA-Z0-9-]+)\.html',          # /photos/xxx.html
+        r'/(\d+)\.html',                            # /数字.html
+    ]
+
     for a in soup.find_all("a", href=True):
         href = a["href"]
-        match = pattern.search(href)
-        if not match:
+        if not href or href.startswith("#") or href.startswith("javascript"):
             continue
-        full_url = href if href.startswith("http") else BASE_URL + href
-        # 封面图：优先从a标签内部找img，否则从父级找第一个img
-        cover_url = ""
-        img_tag = a.find("img")
-        if img_tag and img_tag.get("src"):
-            cover_url = img_tag["src"]
-        else:
-            parent = a.find_parent()
-            if parent:
-                img_tag = parent.find("img")
-                if img_tag and img_tag.get("src"):
-                    cover_url = img_tag["src"]
-        if cover_url and not cover_url.startswith("http"):
-            cover_url = "https:" + cover_url if cover_url.startswith("//") else BASE_URL + "/" + cover_url.lstrip("/")
-        # 标题
-        title = a.get("title") or a.text.strip()
-        if not title:
-            parent = a.find_parent("div") or a.find_parent("li")
-            if parent:
-                title = parent.get("title") or parent.text.strip()
-        if not title:
-            title = "无标题"
-        albums.append({
-            "title": title,
-            "url": full_url,
-            "cover_url": cover_url,
-            "album_id": match.group(1)  # 使用id哈希作为唯一标识
-        })
+        # 跳过明显的导航/分页链接
+        if any(word in href for word in ["sort-vol", "series-", "page=", "search", "login", "register"]):
+            continue
 
-    # 去重
-    seen = set()
-    unique = []
-    for a in albums:
-        aid = a["album_id"]
-        if aid not in seen:
-            seen.add(aid)
-            unique.append(a)
-    print(f"✅ 共发现 {len(unique)} 个图集")
-    return unique
+        match = None
+        for pat in patterns:
+            match = re.search(pat, href)
+            if match:
+                break
+
+        if match:
+            full_url = href if href.startswith("http") else BASE_URL + href
+            # 提取封面图
+            cover_url = ""
+            img_tag = a.find("img")
+            if img_tag and img_tag.get("src"):
+                cover_url = img_tag["src"]
+            else:
+                parent = a.find_parent("div") or a.find_parent("li")
+                if parent:
+                    img_tag = parent.find("img")
+                    if img_tag and img_tag.get("src"):
+                        cover_url = img_tag["src"]
+            if cover_url and not cover_url.startswith("http"):
+                cover_url = "https:" + cover_url if cover_url.startswith("//") else BASE_URL + "/" + cover_url.lstrip("/")
+
+            title = a.get("title") or a.text.strip()
+            if not title:
+                parent = a.find_parent("div") or a.find_parent("li")
+                if parent:
+                    title = parent.get("title") or parent.text.strip()
+            if not title:
+                title = "无标题"
+
+            album_id = match.group(1)
+            if album_id not in seen_ids:
+                seen_ids.add(album_id)
+                albums.append({
+                    "title": title,
+                    "url": full_url,
+                    "cover_url": cover_url,
+                    "album_id": album_id
+                })
+
+    print(f"✅ 诊断提取到 {len(albums)} 个图集")
+    return albums
+
+# 以下函数保持不变（get_album_images、download_image、send_media_groups 等）
+# 但为了完整，这里再次提供全部函数（与之前相同）
 
 async def get_album_images(album_url, max_images=DEFAULT_MAX_IMAGES):
-    """进入详情页提取大图"""
     print(f"  📸 抓取图集: {album_url}")
     html = await get_rendered_html(album_url, scroll_times=5, extra_wait=5)
     soup = BeautifulSoup(html, "html.parser")
@@ -134,7 +160,6 @@ async def get_album_images(album_url, max_images=DEFAULT_MAX_IMAGES):
             continue
         if not src.startswith("http"):
             src = "https:" + src if src.startswith("//") else BASE_URL + "/" + src.lstrip("/")
-        # 过滤logo
         if any(pat in src.lower() for pat in ["/logo", "/favicon", "/icon", "/avatar", "/static/logo", "/assets/logo", "logo.png", "logo.jpg"]):
             continue
         if src not in images:
@@ -225,7 +250,6 @@ async def process_album(album, group_username=None, is_first=False):
     album_url = album["url"]
 
     print(f"\n  🖼️ 处理图集: {title} (ID:{album_id})")
-
     max_imgs = 9999 if is_first else DEFAULT_MAX_IMAGES
 
     cover_data = None
@@ -315,10 +339,10 @@ async def main():
     page_url = SERIES_URL_TEMPLATE.replace("{page}", str(current_page))
     seen = load_seen()
 
-    albums = await get_albums_from_list(page_url)
+    albums = await diagnose_and_get_albums(page_url)  # 使用诊断提取
     if not albums:
-        print("⚠️ 未提取到图集，可能是选择器不匹配，请检查页面结构")
-        save_page_number(current_page - 1)
+        print("⚠️ 未提取到图集，请将上方「📋 页面所有链接示例」的内容发给我，以便修正选择器")
+        # 不更新页码，等待人工干预
         return
 
     albums.reverse()
@@ -341,7 +365,6 @@ async def main():
     next_page = current_page - 1
     save_page_number(next_page)
     print(f"📉 下次将抓取第 {next_page} 页（如果>0）")
-
     print(f"\n🎉 本页完成！共处理 {total_processed} 套新图集")
 
 if __name__ == "__main__":
