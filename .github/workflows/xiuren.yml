@@ -1,1 +1,47 @@
+name: xchina每日一页
 
+on:
+  schedule:
+    - cron: '0 16 * * *'   # UTC 16:00 = 北京时间 00:00
+  workflow_dispatch:
+
+concurrency:
+  group: xchina-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # 需要写权限以提交 next_page.txt 和 seen 文件
+
+    steps:
+      - name: 拉取仓库代码
+        uses: actions/checkout@v4
+
+      - name: 设置Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          pip install requests beautifulsoup4 playwright
+          playwright install chromium --with-deps
+
+      - name: 运行抓取脚本
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
+        run: python update_xchina.py
+
+      - name: 提交进度文件（next_page.txt 和 seen_xchina.json）
+        if: success()
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add next_page.txt seen_xchina.json || true
+          git commit -m "Update progress" || echo "No changes"
+          git pull --rebase origin main
+          git push
