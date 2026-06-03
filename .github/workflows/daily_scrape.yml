@@ -1,0 +1,41 @@
+name: Daily Scrape and Push
+
+on:
+  schedule:
+    - cron: "0 0 * * *"   # 每天 UTC 0:00 运行
+  workflow_dispatch:      # 手动运行
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Run scraper
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_GROUP_ID: ${{ secrets.TG_GROUP_ID }}
+          CF_COOKIE: ${{ secrets.CF_COOKIE }}
+        run: python scrape_and_push.py
+
+      - name: Commit state files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add next_page.txt seen_xchina.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update page state"
+            git push
+          fi
