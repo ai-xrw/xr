@@ -2,8 +2,7 @@
 """
 xchina.co 秀人网图集 → Telegra.ph + 频道封面
 每天往前一页（起始 49），每图集前 30 张，末尾引导加入会员群
-需配置 TELEGRAPH_TOKEN 环境变量（Telegra.ph 真实 access token）
-无 token 时跳过所有图集（不会在频道刷屏）
+需配置 TELEGRAPH_TOKEN 环境变量
 """
 
 import requests
@@ -243,7 +242,7 @@ def get_image_urls_from_album(album_url, max_images=MAX_IMAGES):
 
     return collected_urls[:max_images], info
 
-# ==================== 下载图片（仅封面） ====================
+# ==================== 下载封面 ====================
 def download_cover(url, referer, max_size_mb=5):
     for attempt in range(3):
         try:
@@ -307,6 +306,7 @@ def create_telegraph_page(title, image_urls, vip_link=None):
 
 # ==================== Telegram 发送封面 ====================
 def send_photo_to_channel(photo_data, photo_ctype, caption):
+    """发送封面到频道，使用全局 CHAT_ID"""
     ext = photo_ctype.split("/")[-1].replace("jpeg", "jpg")
     photo_data.seek(0)
     r = requests.post(
@@ -371,7 +371,7 @@ def main():
         if not is_first:
             image_urls = image_urls[:MAX_IMAGES]
 
-        # 下载封面（第一张图）
+        # 下载封面
         print("  📥 下载封面...")
         cover_data, cover_type = download_cover(image_urls[0], referer=album["url"])
         if not cover_data:
@@ -386,10 +386,10 @@ def main():
             continue
         print(f"  ✅ 页面: {telegraph_url}")
 
-        # 发送封面 + 链接到频道
+        # 发送封面到频道
         caption = f"<b>{title}</b>\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
         print("  📸 发送封面到频道...")
-        send_photo_to_channel(cover_data, cover_type, CHAT_ID, caption)
+        send_photo_to_channel(cover_data, cover_type, caption)
 
         seen.add(album["album_id"])
         save_seen(seen)
