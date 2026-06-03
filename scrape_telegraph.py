@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 xchina.co 秀人网图集 → Telegra.ph + 频道封面
+直接嵌入原图链接，无需上传 Telegra.ph
 每天往前一页（起始 49），每图集前 30 张，末尾引导加入会员群
 """
 
@@ -15,7 +16,6 @@ urllib3.disable_warnings()
 # ==================== 配置 ====================
 TOKEN      = os.getenv("TG_TOKEN")
 CHAT_ID    = os.getenv("TG_CHAT_ID")
-# 默认购买链接（你可随时在 Secrets 中覆盖）
 VIP_LINK   = os.getenv("VIP_LINK", "https://t.me/xiuren88bot?start=lWXnjXFzdxP").strip()
 CF_COOKIE  = os.getenv("CF_COOKIE", "")
 
@@ -26,7 +26,6 @@ PAGE_FILE  = "next_page.txt"
 SEEN_FILE  = "seen_xchina.json"
 MAX_IMAGES = 30
 TG_INTERVAL = 5
-TELEGRAPH_INTERVAL = 2
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -135,27 +134,15 @@ def get_albums_from_list(page):
             continue
         seen_ids.add(album_id)
 
-        cover_url = ""
-        img_div = item.find("div", class_="img")
-        if img_div:
-            style = img_div.get("style", "")
-            m = re.search(r"url\(['\"]?([^'\")\s]+)['\"]?\)", style)
-            if m:
-                cover_url = fix_url(m.group(1))
-
-        list_title = a_tag.get("title", "").strip()
-
         albums.append({
             "album_id": album_id,
             "url": detail_url,
-            "cover_url": cover_url,
-            "list_title": list_title,
         })
 
     print(f"  找到 {len(albums)} 个图集")
     return albums
 
-# ==================== 图集详情 + 原图 ====================
+# ==================== 图集详情 + 原图链接 ====================
 def parse_album_detail(album_url):
     r = safe_get(album_url)
     if not r:
@@ -205,7 +192,8 @@ def parse_album_detail(album_url):
 
     return info, soup
 
-def get_images_from_album(album_url, max_images=MAX_IMAGES):
+def get_image_urls_from_album(album_url, max_images=MAX_IMAGES):
+    """返回原图URL列表和info"""
     info, first_soup = parse_album_detail(album_url)
     if not info:
         info = {"title": "无标题", "model": "", "series": "秀人网", "vol": "", "date": ""}
@@ -243,6 +231,7 @@ def get_images_from_album(album_url, max_images=MAX_IMAGES):
             if not m:
                 continue
             thumb_url = m.group(1)
+            # 构造原图链接
             filename = os.path.basename(thumb_url)
             name_no_dim = re.sub(r'_\d+x\d*', '', filename)
             name_jpg = os.path.splitext(name_no_dim)[0] + ".jpg"
@@ -258,47 +247,29 @@ def get_images_from_album(album_url, max_images=MAX_IMAGES):
 
     return collected_urls[:max_images], info
 
-# ==================== 下载图片 ====================
-def download_image(url, referer, max_size_mb=5):
+# ==================== 下载封面用 ====================
+def download_cover(url, referer):
+    """下载第一张图作为封面，返回 BytesIO 和 content-type"""
     for attempt in range(3):
         try:
             r = SESSION.get(url, headers={"Referer": referer}, timeout=30)
             r.raise_for_status()
             ct = r.headers.get("Content-Type", "image/jpeg")
-            if not ct.startswith("image/"):
+            if not ct.startswith("image/") or len(r.content) < 2000:
                 continue
-            if len(r.content) < 2000:
-                continue
-            if len(r.content) > max_size_mb * 1024 * 1024:
-                print(f"    ⚠️ 图片过大 ({len(r.content)//1024}KB)，跳过")
-                return None, None
             return BytesIO(r.content), ct
         except Exception as e:
-            print(f"    ❌ 下载失败 ({attempt+1}/3): {e}")
+            print(f"    ❌ 封面下载失败 ({attempt+1}/3): {e}")
             time.sleep(1)
     return None, None
 
-# ==================== Telegra.ph ====================
-def upload_to_telegraph(image_data, image_type):
-    ext = image_type.split("/")[-1].replace("jpeg", "jpg")
-    image_data.seek(0)
-    files = {"file": (f"image.{ext}", image_data, image_type)}
-    try:
-        r = requests.post("https://telegra.ph/upload", files=files, timeout=30)
-        if r.status_code == 200:
-            data = r.json()
-            if data and isinstance(data, list) and "src" in data[0]:
-                return data[0]["src"]
-        print(f"    ❌ 上传失败: {r.text[:100]}")
-    except Exception as e:
-        print(f"    ❌ 上传异常: {e}")
-    return None
-
-def create_telegraph_page(title, image_srcs, vip_link=None):
-    if not image_srcs:
+# ==================== Telegra.ph 页面（直接嵌入原图URL） ====================
+def create_telegraph_page(title, image_urls, vip_link=None):
+    """直接用原图URL创建 Telegraph 页面"""
+    if not image_urls:
         return None
 
-    content = [{"tag": "img", "attrs": {"src": src}} for src in image_srcs]
+    content = [{"tag": "img", "attrs": {"src": url}} for url in image_urls]
 
     if vip_link:
         vip_node = {
@@ -332,7 +303,7 @@ def create_telegraph_page(title, image_srcs, vip_link=None):
         print(f"    ❌ 创建异常: {e}")
     return None
 
-# ==================== Telegram 发送 ====================
+# ==================== Telegram 发送封面 ====================
 def send_photo_to_channel(photo_data, photo_ctype, caption):
     ext = photo_ctype.split("/")[-1].replace("jpeg", "jpg")
     photo_data.seek(0)
@@ -354,7 +325,6 @@ def main():
         sys.exit(1)
 
     print(f"✅ 会员群引导链接: {VIP_LINK}")
-
     print(f"\n🚀 xchina 图集抓取 → Telegra.ph + 频道")
     seen = load_seen()
     current_page = load_page()
@@ -383,7 +353,8 @@ def main():
         print(f"\n{'='*55}")
         print(f"[{idx+1}/{len(new_albums)}] 开始处理 {album['url']}")
 
-        image_urls, info = get_images_from_album(album["url"], MAX_IMAGES)
+        # 获取原图链接列表
+        image_urls, info = get_image_urls_from_album(album["url"], MAX_IMAGES)
         title = info.get("title", "无标题")
         print(f"  📝 标题: {title}")
 
@@ -395,43 +366,25 @@ def main():
         if not is_first:
             image_urls = image_urls[:MAX_IMAGES]
 
-        print(f"  📥 下载 {len(image_urls)} 张...")
-        downloaded = []
-        for url in image_urls:
-            data, ctype = download_image(url, referer=album["url"])
-            if data:
-                downloaded.append((data, ctype))
-            time.sleep(0.3)
-
-        print(f"  下载成功: {len(downloaded)}/{len(image_urls)}")
-        if not downloaded:
+        # 下载第一张作为封面
+        print(f"  📥 下载封面...")
+        cover_data, cover_type = download_cover(image_urls[0], referer=album["url"])
+        if not cover_data:
+            print("  ⚠️ 封面下载失败，跳过该图集")
             continue
 
-        print("  ☁️ 上传到 Telegra.ph...")
-        telegraph_srcs = []
-        for i, (data, ctype) in enumerate(downloaded):
-            src = upload_to_telegraph(data, ctype)
-            if src:
-                telegraph_srcs.append(src)
-                print(f"    [{i+1}/{len(downloaded)}] 上传成功 {src}")
-            else:
-                print(f"    [{i+1}/{len(downloaded)}] 上传失败，跳过")
-            time.sleep(TELEGRAPH_INTERVAL)
-
-        if not telegraph_srcs:
-            print("  ❌ 所有图片上传失败，跳过该图集")
-            continue
-
+        # 创建 Telegraph 页面（直接使用原图链接）
         print("  📝 创建 Telegraph 页面...")
-        telegraph_url = create_telegraph_page(title, telegraph_srcs, vip_link=VIP_LINK)
+        telegraph_url = create_telegraph_page(title, image_urls, vip_link=VIP_LINK)
         if not telegraph_url:
             print("  ❌ 创建页面失败，跳过")
             continue
         print(f"  ✅ 页面: {telegraph_url}")
 
+        # 发送封面到频道
         caption = f"<b>{title}</b>\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
         print("  📸 发送封面到频道...")
-        send_photo_to_channel(downloaded[0][0], downloaded[0][1], caption)
+        send_photo_to_channel(cover_data, cover_type, caption)
 
         seen.add(album["album_id"])
         save_seen(seen)
