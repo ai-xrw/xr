@@ -3,7 +3,7 @@
 xchina.co 秀人网图集 → Telegra.ph + 频道封面
 每天往前一页（起始 49），每图集前 30 张，末尾引导加入会员群
 需配置 TELEGRAPH_TOKEN 环境变量（Telegra.ph 真实 access token）
-若无 token，则直接发送媒体组到频道（会刷屏，不推荐）
+无 token 时跳过所有图集（不会在频道刷屏）
 """
 
 import requests
@@ -161,7 +161,6 @@ def parse_album_detail(album_url):
             if "fa-address-card" in classes:
                 info["model"] = text
             elif "fa-video-camera" in classes:
-                # 获取最后一个 <a> 标签的文本（具体系列名）
                 a_tags = item.find_all("a")
                 if a_tags:
                     info["series"] = a_tags[-1].get_text(strip=True)
@@ -244,8 +243,8 @@ def get_image_urls_from_album(album_url, max_images=MAX_IMAGES):
 
     return collected_urls[:max_images], info
 
-# ==================== 下载图片 ====================
-def download_image(url, referer, max_size_mb=5):
+# ==================== 下载图片（仅封面） ====================
+def download_cover(url, referer, max_size_mb=5):
     for attempt in range(3):
         try:
             r = SESSION.get(url, headers={"Referer": referer}, timeout=30)
@@ -260,14 +259,14 @@ def download_image(url, referer, max_size_mb=5):
                 return None, None
             return BytesIO(r.content), ct
         except Exception as e:
-            print(f"    ❌ 下载失败 ({attempt+1}/3): {e}")
+            print(f"    ❌ 封面下载失败 ({attempt+1}/3): {e}")
             time.sleep(1)
     return None, None
 
 # ==================== Telegra.ph 页面 ====================
 def create_telegraph_page(title, image_urls, vip_link=None):
     if not TELEGRAPH_TOKEN:
-        print("  ⚠️ 未配置 TELEGRAPH_TOKEN，跳过 Telegraph 创建")
+        print("  ⚠️ 未配置 TELEGRAPH_TOKEN")
         return None
     if not image_urls:
         return None
@@ -306,62 +305,13 @@ def create_telegraph_page(title, image_urls, vip_link=None):
         print(f"    ❌ 创建异常: {e}")
     return None
 
-# ==================== 发送媒体组（备用方案） ====================
-def send_media_group(image_data_list, chat_id, caption=""):
-    """将图片列表以媒体组形式发送，返回第一个消息的 message_id"""
-    if not image_data_list:
-        return None
-    first_msg_id = None
-    for start in range(0, len(image_data_list), 10):
-        batch = image_data_list[start:start+10]
-        media, files = [], {}
-        for i, (data, ctype) in enumerate(batch):
-            attach = f"photo{i}"
-            item = {"type": "photo", "media": f"attach://{attach}"}
-            if start == 0 and i == 0 and caption:
-                item["caption"] = caption[:1024]
-                item["parse_mode"] = "HTML"
-            media.append(item)
-            ext = ctype.split("/")[-1].replace("jpeg", "jpg")
-            data.seek(0)
-            files[attach] = (f"{attach}.{ext}", data, ctype)
-        files["media"] = (None, json.dumps(media), "application/json")
-
-        for attempt in range(3):
-            try:
-                r = requests.post(
-                    f"https://api.telegram.org/bot{TOKEN}/sendMediaGroup",
-                    data={"chat_id": chat_id},
-                    files=files,
-                    timeout=60,
-                )
-                if r.status_code == 200:
-                    res = r.json().get("result", [])
-                    if res and first_msg_id is None:
-                        first_msg_id = res[0]["message_id"]
-                    print(f"  ✅ 媒体组发送成功 ({len(res)} 张)")
-                    break
-                elif r.status_code == 429:
-                    wait = r.json().get("parameters", {}).get("retry_after", 30)
-                    print(f"  ⚠️ 限流 {wait}s")
-                    time.sleep(wait)
-                    for d, _ in batch:
-                        d.seek(0)
-                else:
-                    print(f"  ❌ 发送失败 ({r.status_code}): {r.text[:200]}")
-                    break
-            except Exception as e:
-                print(f"  ❌ 发送异常: {e}")
-                time.sleep(3)
-        time.sleep(TG_INTERVAL)
-    return first_msg_id
-
-def send_single_photo(photo_data, photo_ctype, chat_id, caption=""):
+# ==================== Telegram 发送封面 ====================
+def send_photo_to_channel(photo_data, photo_ctype, caption):
     ext = photo_ctype.split("/")[-1].replace("jpeg", "jpg")
     photo_data.seek(0)
     r = requests.post(
         f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-        data={"chat_id": chat_id, "caption": caption, "parse_mode": "HTML"},
+        data={"chat_id": CHAT_ID, "caption": caption, "parse_mode": "HTML"},
         files={"photo": (f"cover.{ext}", photo_data, photo_ctype)},
         timeout=30,
     )
@@ -376,10 +326,9 @@ def main():
         print("❌ 缺少 TG_TOKEN / TG_CHAT_ID")
         sys.exit(1)
 
-    if TELEGRAPH_TOKEN:
-        print("✅ 已配置 TELEGRAPH_TOKEN，将创建 Telegraph 页面")
-    else:
-        print("⚠️ 未配置 TELEGRAPH_TOKEN，将直接发送媒体组到频道")
+    if not TELEGRAPH_TOKEN:
+        print("❌ 未配置 TELEGRAPH_TOKEN，无法创建 Telegraph 页面，退出")
+        sys.exit(1)
 
     print(f"✅ 会员群引导链接: {VIP_LINK}")
     print(f"\n🚀 xchina 图集抓取 → Telegra.ph + 频道")
@@ -424,48 +373,23 @@ def main():
 
         # 下载封面（第一张图）
         print("  📥 下载封面...")
-        cover_data, cover_type = download_image(image_urls[0], referer=album["url"])
+        cover_data, cover_type = download_cover(image_urls[0], referer=album["url"])
         if not cover_data:
             print("  ⚠️ 封面下载失败，跳过该图集")
             continue
 
-        # 创建 Telegraph 页面（如果有 token）
-        telegraph_url = None
-        if TELEGRAPH_TOKEN:
-            print("  📝 创建 Telegraph 页面...")
-            telegraph_url = create_telegraph_page(title, image_urls, vip_link=VIP_LINK)
-            if telegraph_url:
-                print(f"  ✅ 页面: {telegraph_url}")
-            else:
-                print("  ❌ 创建页面失败，将回退到媒体组发送")
-
-        # 如果没有 Telegraph 链接，下载所有图片并直接发送媒体组
+        # 创建 Telegraph 页面
+        print("  📝 创建 Telegraph 页面...")
+        telegraph_url = create_telegraph_page(title, image_urls, vip_link=VIP_LINK)
         if not telegraph_url:
-            print("  📥 下载全部图片用于媒体组...")
-            all_images = []
-            for i, url in enumerate(image_urls):
-                data, ctype = download_image(url, referer=album["url"])
-                if data:
-                    all_images.append((data, ctype))
-                time.sleep(0.2)
-            print(f"  下载成功: {len(all_images)}/{len(image_urls)}")
-            if not all_images:
-                print("  ❌ 无图片可发送，跳过")
-                continue
+            print("  ❌ 创建 Telegraph 页面失败，跳过该图集")
+            continue
+        print(f"  ✅ 页面: {telegraph_url}")
 
-            # 第一张作为封面单独发送（带标题 + 会员群链接）
-            caption = f"<b>{title}</b>\n\n<a href=\"{VIP_LINK}\">📖 加入会员群查看完整图集</a>"
-            send_single_photo(all_images[0][0], all_images[0][1], CHAT_ID, caption)
-
-            # 其余图片媒体组发送
-            if len(all_images) > 1:
-                print("  📤 发送剩余图片...")
-                send_media_group(all_images[1:], CHAT_ID)
-        else:
-            # 有 Telegraph 链接，只发封面 + 链接
-            caption = f"<b>{title}</b>\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
-            print("  📸 发送封面到频道...")
-            send_single_photo(cover_data, cover_type, CHAT_ID, caption)
+        # 发送封面 + 链接到频道
+        caption = f"<b>{title}</b>\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
+        print("  📸 发送封面到频道...")
+        send_photo_to_channel(cover_data, cover_type, CHAT_ID, caption)
 
         seen.add(album["album_id"])
         save_seen(seen)
