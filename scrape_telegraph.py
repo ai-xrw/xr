@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 xchina.co 秀人网图集 → Telegra.ph + 频道封面
+所有图片上传到 Telegraph 图床后再建页面，彻底解决防盗链
 每天往前一页（起始 49），每图集前 30 张，末尾引导加入会员群
 需配置 TELEGRAPH_TOKEN 环境变量
 """
@@ -242,8 +243,8 @@ def get_image_urls_from_album(album_url, max_images=MAX_IMAGES):
 
     return collected_urls[:max_images], info
 
-# ==================== 下载封面 ====================
-def download_cover(url, referer, max_size_mb=5):
+# ==================== 下载图片（用于封面和上传） ====================
+def download_image(url, referer, max_size_mb=5):
     for attempt in range(3):
         try:
             r = SESSION.get(url, headers={"Referer": referer}, timeout=30)
@@ -258,19 +259,59 @@ def download_cover(url, referer, max_size_mb=5):
                 return None, None
             return BytesIO(r.content), ct
         except Exception as e:
-            print(f"    ❌ 封面下载失败 ({attempt+1}/3): {e}")
+            print(f"    ❌ 下载失败 ({attempt+1}/3): {e}")
             time.sleep(1)
     return None, None
 
-# ==================== Telegra.ph 页面 ====================
-def create_telegraph_page(title, image_urls, vip_link=None):
+# ==================== Telegraph 上传 ====================
+def upload_to_telegraph(image_data, image_type):
+    """上传图片到 telegra.ph，返回 src（如 /file/xxx.jpg）"""
+    ext = image_type.split("/")[-1].replace("jpeg", "jpg")
+    # 确保文件名包含正确扩展名
+    filename = f"image.{ext}"
+    image_data.seek(0)
+
+    # 使用 multipart/form-data 上传
+    files = {"file": (filename, image_data, image_type)}
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://telegra.ph",
+        "Referer": "https://telegra.ph/",
+    }
+    for attempt in range(3):
+        try:
+            r = requests.post(
+                "https://telegra.ph/upload",
+                files=files,
+                headers=headers,
+                timeout=30
+            )
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list) and len(data) > 0 and "src" in data[0]:
+                    return data[0]["src"]
+                elif isinstance(data, dict) and "error" in data:
+                    print(f"    ❌ Telegraph 错误: {data['error']}")
+                else:
+                    print(f"    ❌ 未知响应: {r.text[:200]}")
+            else:
+                print(f"    ❌ HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"    ❌ 上传异常 ({attempt+1}/3): {e}")
+        if attempt < 2:
+            time.sleep(2)
+    return None
+
+# ==================== Telegraph 页面创建 ====================
+def create_telegraph_page(title, telegraph_srcs, vip_link=None):
+    """使用已上传的 telegraph 图片 src 创建页面"""
     if not TELEGRAPH_TOKEN:
         print("  ⚠️ 未配置 TELEGRAPH_TOKEN")
         return None
-    if not image_urls:
+    if not telegraph_srcs:
         return None
 
-    content = [{"tag": "img", "attrs": {"src": url}} for url in image_urls]
+    content = [{"tag": "img", "attrs": {"src": src}} for src in telegraph_srcs]
 
     if vip_link:
         vip_node = {
@@ -306,7 +347,7 @@ def create_telegraph_page(title, image_urls, vip_link=None):
 
 # ==================== Telegram 发送封面 ====================
 def send_photo_to_channel(photo_data, photo_ctype, caption):
-    """发送封面到频道，使用全局 CHAT_ID"""
+    """发送封面到频道（文字不加粗）"""
     ext = photo_ctype.split("/")[-1].replace("jpeg", "jpg")
     photo_data.seek(0)
     r = requests.post(
@@ -371,23 +412,43 @@ def main():
         if not is_first:
             image_urls = image_urls[:MAX_IMAGES]
 
-        # 下载封面
+        # 1. 下载封面（第一张图）
         print("  📥 下载封面...")
-        cover_data, cover_type = download_cover(image_urls[0], referer=album["url"])
+        cover_data, cover_type = download_image(image_urls[0], referer=album["url"])
         if not cover_data:
             print("  ⚠️ 封面下载失败，跳过该图集")
             continue
 
-        # 创建 Telegraph 页面
+        # 2. 下载所有图片并上传到 Telegraph
+        print(f"  ☁️ 上传 {len(image_urls)} 张图片到 Telegraph...")
+        telegraph_srcs = []
+        for i, url in enumerate(image_urls):
+            data, ctype = download_image(url, referer=album["url"])
+            if not data:
+                print(f"    [{i+1}/{len(image_urls)}] 下载失败，跳过")
+                continue
+            src = upload_to_telegraph(data, ctype)
+            if src:
+                telegraph_srcs.append(src)
+                print(f"    [{i+1}/{len(image_urls)}] 上传成功")
+            else:
+                print(f"    [{i+1}/{len(image_urls)}] 上传失败，跳过")
+            time.sleep(1)  # 避免请求过快
+
+        if not telegraph_srcs:
+            print("  ❌ 所有图片上传失败，跳过该图集")
+            continue
+
+        # 3. 创建 Telegraph 页面
         print("  📝 创建 Telegraph 页面...")
-        telegraph_url = create_telegraph_page(title, image_urls, vip_link=VIP_LINK)
+        telegraph_url = create_telegraph_page(title, telegraph_srcs, vip_link=VIP_LINK)
         if not telegraph_url:
-            print("  ❌ 创建 Telegraph 页面失败，跳过该图集")
+            print("  ❌ 创建页面失败，跳过")
             continue
         print(f"  ✅ 页面: {telegraph_url}")
 
-        # 发送封面到频道
-        caption = f"<b>{title}</b>\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
+        # 4. 发送封面到频道（不加粗）
+        caption = f"{title}\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
         print("  📸 发送封面到频道...")
         send_photo_to_channel(cover_data, cover_type, caption)
 
