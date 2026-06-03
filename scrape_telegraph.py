@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """
 xchina.co 秀人网图集 → Telegra.ph + 频道封面
-所有图片上传到 Telegraph 图床后再建页面，彻底解决防盗链
+图片上传至 imgbb 图床后嵌入 Telegraph，稳定可靠
 每天往前一页（起始 49），每图集前 30 张，末尾引导加入会员群
-需配置 TELEGRAPH_TOKEN 环境变量
 """
 
 import requests
@@ -243,7 +242,7 @@ def get_image_urls_from_album(album_url, max_images=MAX_IMAGES):
 
     return collected_urls[:max_images], info
 
-# ==================== 下载图片（用于封面和上传） ====================
+# ==================== 下载图片 ====================
 def download_image(url, referer, max_size_mb=5):
     for attempt in range(3):
         try:
@@ -263,37 +262,32 @@ def download_image(url, referer, max_size_mb=5):
             time.sleep(1)
     return None, None
 
-# ==================== Telegraph 上传 ====================
-def upload_to_telegraph(image_data, image_type):
-    """上传图片到 telegra.ph，返回 src（如 /file/xxx.jpg）"""
+# ==================== imgbb 上传 ====================
+def upload_to_imgbb(image_data, image_type):
+    """上传图片到 imgbb（匿名），返回直链 URL"""
     ext = image_type.split("/")[-1].replace("jpeg", "jpg")
-    # 确保文件名包含正确扩展名
-    filename = f"image.{ext}"
     image_data.seek(0)
-
-    # 使用 multipart/form-data 上传
-    files = {"file": (filename, image_data, image_type)}
+    url = "https://imgbb.com/json"
+    files = {"source": (f"image.{ext}", image_data, image_type)}
+    data = {
+        "type": "file",
+        "action": "upload",
+        "timestamp": str(int(time.time() * 1000)),
+    }
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Origin": "https://telegra.ph",
-        "Referer": "https://telegra.ph/",
+        "Origin": "https://imgbb.com",
+        "Referer": "https://imgbb.com/",
     }
     for attempt in range(3):
         try:
-            r = requests.post(
-                "https://telegra.ph/upload",
-                files=files,
-                headers=headers,
-                timeout=30
-            )
+            r = requests.post(url, files=files, data=data, headers=headers, timeout=30)
             if r.status_code == 200:
-                data = r.json()
-                if isinstance(data, list) and len(data) > 0 and "src" in data[0]:
-                    return data[0]["src"]
-                elif isinstance(data, dict) and "error" in data:
-                    print(f"    ❌ Telegraph 错误: {data['error']}")
+                resp = r.json()
+                if resp.get("status_code") == 200 and "image" in resp:
+                    return resp["image"]["image"]["url"]
                 else:
-                    print(f"    ❌ 未知响应: {r.text[:200]}")
+                    print(f"    ❌ imgbb 错误: {resp.get('status_txt', 'unknown')}")
             else:
                 print(f"    ❌ HTTP {r.status_code}: {r.text[:200]}")
         except Exception as e:
@@ -303,15 +297,15 @@ def upload_to_telegraph(image_data, image_type):
     return None
 
 # ==================== Telegraph 页面创建 ====================
-def create_telegraph_page(title, telegraph_srcs, vip_link=None):
-    """使用已上传的 telegraph 图片 src 创建页面"""
+def create_telegraph_page(title, image_urls, vip_link=None):
+    """使用 imgbb 直链创建 Telegraph 页面"""
     if not TELEGRAPH_TOKEN:
         print("  ⚠️ 未配置 TELEGRAPH_TOKEN")
         return None
-    if not telegraph_srcs:
+    if not image_urls:
         return None
 
-    content = [{"tag": "img", "attrs": {"src": src}} for src in telegraph_srcs]
+    content = [{"tag": "img", "attrs": {"src": url}} for url in image_urls]
 
     if vip_link:
         vip_node = {
@@ -372,7 +366,7 @@ def main():
         sys.exit(1)
 
     print(f"✅ 会员群引导链接: {VIP_LINK}")
-    print(f"\n🚀 xchina 图集抓取 → Telegra.ph + 频道")
+    print(f"\n🚀 xchina 图集抓取 → Telegraph (via imgbb) + 频道")
     seen = load_seen()
     current_page = load_page()
     print(f"📌 当前页码: {current_page}")
@@ -419,29 +413,29 @@ def main():
             print("  ⚠️ 封面下载失败，跳过该图集")
             continue
 
-        # 2. 下载所有图片并上传到 Telegraph
-        print(f"  ☁️ 上传 {len(image_urls)} 张图片到 Telegraph...")
-        telegraph_srcs = []
+        # 2. 下载所有图片并上传至 imgbb
+        print(f"  ☁️ 上传 {len(image_urls)} 张图片到 imgbb...")
+        imgbb_urls = []
         for i, url in enumerate(image_urls):
             data, ctype = download_image(url, referer=album["url"])
             if not data:
                 print(f"    [{i+1}/{len(image_urls)}] 下载失败，跳过")
                 continue
-            src = upload_to_telegraph(data, ctype)
-            if src:
-                telegraph_srcs.append(src)
+            img_url = upload_to_imgbb(data, ctype)
+            if img_url:
+                imgbb_urls.append(img_url)
                 print(f"    [{i+1}/{len(image_urls)}] 上传成功")
             else:
                 print(f"    [{i+1}/{len(image_urls)}] 上传失败，跳过")
-            time.sleep(1)  # 避免请求过快
+            time.sleep(1)  # 避免过快
 
-        if not telegraph_srcs:
+        if not imgbb_urls:
             print("  ❌ 所有图片上传失败，跳过该图集")
             continue
 
-        # 3. 创建 Telegraph 页面
+        # 3. 创建 Telegraph 页面（使用 imgbb 直链）
         print("  📝 创建 Telegraph 页面...")
-        telegraph_url = create_telegraph_page(title, telegraph_srcs, vip_link=VIP_LINK)
+        telegraph_url = create_telegraph_page(title, imgbb_urls, vip_link=VIP_LINK)
         if not telegraph_url:
             print("  ❌ 创建页面失败，跳过")
             continue
