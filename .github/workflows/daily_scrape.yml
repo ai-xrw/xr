@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write          # 授予写入仓库内容的权限
+  contents: write
 
 jobs:
   scrape:
@@ -30,6 +30,7 @@ jobs:
         env:
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TELEGRAPH_TOKEN: ${{ secrets.TELEGRAPH_TOKEN }}
           CF_COOKIE: ${{ secrets.CF_COOKIE }}
         run: python scrape_telegraph.py
 
