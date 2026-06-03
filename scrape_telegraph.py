@@ -168,6 +168,19 @@ def parse_album_detail(album_url):
             elif "fa-calendar-days" in classes:
                 info["date"] = text
 
+    # 处理 Vol. → No.
+    vol_raw = info["vol"].strip()
+    if re.search(r'\d', vol_raw):
+        # 提取数字部分
+        num_match = re.search(r'(\d+)', vol_raw)
+        if num_match:
+            vol_formatted = f"No.{num_match.group(1)}"
+        else:
+            vol_formatted = vol_raw.replace("Vol.", "No.")
+    else:
+        vol_formatted = vol_raw.replace("Vol.", "No.") if "Vol." in vol_raw else ""
+
+    # 构建标题
     series_clean = info["series"].strip() or "秀人网"
     if series_clean == "秀人网":
         series_clean = "Xiuren秀人网"
@@ -175,14 +188,13 @@ def parse_album_detail(album_url):
         series_clean = "Xiuren" + series_clean
 
     date_str = info["date"].strip()
-    vol_str = info["vol"].strip()
     model_str = info["model"].strip()
 
     title_parts = [f"[{series_clean}]"]
     if date_str:
         title_parts.append(date_str)
-    if vol_str:
-        title_parts.append(vol_str)
+    if vol_formatted:
+        title_parts.append(vol_formatted)
     if model_str:
         title_parts.append(f"#{model_str}")
     info["title"] = " ".join(title_parts)
@@ -298,7 +310,7 @@ def upload_to_imgbb(image_data, image_type):
 
 # ==================== Telegraph 页面创建 ====================
 def create_telegraph_page(title, image_urls, vip_link=None):
-    """使用 imgbb 直链创建 Telegraph 页面"""
+    """使用 imgbb 直链创建 Telegraph 页面，末尾引导用醒目样式"""
     if not TELEGRAPH_TOKEN:
         print("  ⚠️ 未配置 TELEGRAPH_TOKEN")
         return None
@@ -309,13 +321,13 @@ def create_telegraph_page(title, image_urls, vip_link=None):
 
     if vip_link:
         vip_node = {
-            "tag": "p",
+            "tag": "h3",                     # 二级标题，字体更大
             "children": [
-                "查看完整版图集，点击 ",
+                "🚀 查看完整版图集，点击 ",
                 {
                     "tag": "a",
                     "attrs": {"href": vip_link},
-                    "children": ["加入会员群"]
+                    "children": ["✨ 加入会员群 ✨"]
                 }
             ]
         }
@@ -406,14 +418,14 @@ def main():
         if not is_first:
             image_urls = image_urls[:MAX_IMAGES]
 
-        # 1. 下载封面（第一张图）
+        # 下载封面
         print("  📥 下载封面...")
         cover_data, cover_type = download_image(image_urls[0], referer=album["url"])
         if not cover_data:
             print("  ⚠️ 封面下载失败，跳过该图集")
             continue
 
-        # 2. 下载所有图片并上传至 imgbb
+        # 上传所有图片至 imgbb
         print(f"  ☁️ 上传 {len(image_urls)} 张图片到 imgbb...")
         imgbb_urls = []
         for i, url in enumerate(image_urls):
@@ -427,13 +439,13 @@ def main():
                 print(f"    [{i+1}/{len(image_urls)}] 上传成功")
             else:
                 print(f"    [{i+1}/{len(image_urls)}] 上传失败，跳过")
-            time.sleep(1)  # 避免过快
+            time.sleep(2.5)  # 遵守 imgbb 频率限制
 
         if not imgbb_urls:
             print("  ❌ 所有图片上传失败，跳过该图集")
             continue
 
-        # 3. 创建 Telegraph 页面（使用 imgbb 直链）
+        # 创建 Telegraph 页面
         print("  📝 创建 Telegraph 页面...")
         telegraph_url = create_telegraph_page(title, imgbb_urls, vip_link=VIP_LINK)
         if not telegraph_url:
@@ -441,8 +453,8 @@ def main():
             continue
         print(f"  ✅ 页面: {telegraph_url}")
 
-        # 4. 发送封面到频道（不加粗）
-        caption = f"{title}\n\n<a href=\"{telegraph_url}\">📖 查看更多图集</a>"
+        # 发送封面到频道
+        caption = f"{title}\n\n<a href=\"{telegraph_url}\">👉 点击观看图集</a>"
         print("  📸 发送封面到频道...")
         send_photo_to_channel(cover_data, cover_type, caption)
 
