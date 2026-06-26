@@ -21,7 +21,7 @@ VIP_LINK          = os.getenv("VIP_LINK", "https://t.me/xiuren88bot?start=buy_48
 CF_COOKIE         = os.getenv("CF_COOKIE", "")
 
 BASE_URL   = "https://xchina.co"
-SERIES_URL = "https://xchina.co/photos/series-5f1476781eab4/{page}.html"
+SERIES_URL = "https://xchina.co/photos/series-6660093348354/{page}.html"
 START_PAGE = 49
 PAGE_FILE  = "next_page.txt"
 SEEN_FILE  = "seen_xchina.json"
