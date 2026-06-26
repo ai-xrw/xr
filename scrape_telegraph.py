@@ -17,7 +17,7 @@ urllib3.disable_warnings()
 TOKEN             = os.getenv("TG_TOKEN")
 CHAT_ID           = os.getenv("TG_CHAT_ID")
 TELEGRAPH_TOKEN   = os.getenv("TELEGRAPH_TOKEN", "").strip()
-VIP_LINK          = os.getenv("VIP_LINK", "https://t.me/xiuren88bot?start=lWXnjXFzdxP").strip()
+VIP_LINK          = os.getenv("VIP_LINK", "https://t.me/xiuren88bot?start=buy_487").strip()
 CF_COOKIE         = os.getenv("CF_COOKIE", "")
 
 BASE_URL   = "https://xchina.co"
